@@ -69,8 +69,8 @@ pinned = apply_stream(pipe.text_encoder, layers_path="model.language_model.layer
 
 The two calls compose in either order, and each is idempotent. `apply_diet`
 assumes the pipeline reads `outputs.hidden_states` (every diffusers text-encoder
-path does); `apply_stream` assumes the decoder layers are structurally identical
-(every mainstream LLM's are).
+path does); `apply_stream` keeps one ring of slots per layer signature, so stacks with
+alternating layer kinds work too.
 
 ### Model recipes
 
@@ -81,6 +81,20 @@ path does); `apply_stream` assumes the decoder layers are structurally identical
 | T5-XXL (FLUX, SD3) | `encoder.embed_tokens`¹ | `encoder.block` |
 
 ¹ T5 is encoder-only: pass `lm_head_path=None` and skip `apply_lm_head_skip`.
+
+All three recipes are validated bit-identical on real hardware
+(`benchmarks/bench_text_encoder.py`):
+
+| Model | Resident (before → after) | Encode (before → after) |
+|---|---|---|
+| Qwen3-VL bf16 (Qwen-Image 2.1) | 16.34 → 2.19 GiB | 0.040 → 0.886 s |
+| Gemma NF4 (LTX-2.5) | 7.63 → 0.80 GiB | 0.069 → 0.405 s |
+| T5-XXL bf16 (encoder-only) | 8.87 → 1.47 GiB | 0.023 → 0.570 s |
+
+On Gemma NF4, stock group offloading crashes with device mismatches at both
+leaf_level and block_level, while tediet runs as-is. Models with alternating
+layer kinds (Gemma's sliding/global attention layers) are handled by keeping
+one ring of slots per layer signature.
 
 Recipes for more models, and the design rationale, live in [docs/](docs/).
 

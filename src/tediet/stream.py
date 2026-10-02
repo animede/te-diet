@@ -71,7 +71,6 @@ class WindowedLayerStreamer:
         self.nslots = self.window + 1
         self.copy_stream = torch.cuda.Stream(device=self.device)
         self.copied = [torch.cuda.Event() for _ in self.layers]
-        self.slot_free = [torch.cuda.Event() for _ in range(self.nslots)]
         self.cpu_snap = []
         pinned_bytes = 0
         for layer in self.layers:
@@ -86,23 +85,36 @@ class WindowedLayerStreamer:
             self.cpu_snap.append(snap)
         self.pinned_gib = pinned_bytes / 1024**3
 
-        shapes0 = [(c.shape, c.dtype) for _, _, c in self.cpu_snap[0]]
-        self.uniform = all(
-            [(c.shape, c.dtype) for _, _, c in snap] == shapes0 for snap in self.cpu_snap[1:]
-        )
-        if not self.uniform:
-            raise ValueError(
-                "layers are not structurally identical; the ring buffer needs uniform layers"
-            )
-        self.slots = [
-            [torch.empty(c.shape, dtype=c.dtype, device=self.device) for _, _, c in self.cpu_snap[0]]
-            for _ in range(self.nslots)
-        ]
-        self.slots_gib = sum(
-            t.numel() * t.element_size() for bufs in self.slots for t in bufs
-        ) / 1024**3
-        for ev in self.slot_free:
-            ev.record()
+        # Layers are grouped by structural signature; each signature gets its
+        # own ring of window+1 slots. Models with alternating layer kinds
+        # (for example Gemma's sliding/global attention layers) therefore
+        # work too: a layer only ever reuses a slot of its own signature.
+        self.sig_of = []
+        occurrence = []
+        counts: dict[tuple, int] = {}
+        for snap in self.cpu_snap:
+            sig = tuple((tuple(c.shape), c.dtype) for _, _, c in snap)
+            self.sig_of.append(sig)
+            occurrence.append(counts.get(sig, 0))
+            counts[sig] = counts.get(sig, 0) + 1
+        self.slot_of = [occ % self.nslots for occ in occurrence]
+        self.slots: dict[tuple, list[list[torch.Tensor]]] = {}
+        self.slot_free: dict[tuple, list[torch.cuda.Event]] = {}
+        slots_bytes = 0
+        for i, snap in enumerate(self.cpu_snap):
+            sig = self.sig_of[i]
+            if sig not in self.slots:
+                rings = []
+                for _ in range(min(self.nslots, counts[sig])):
+                    bufs = [torch.empty(c.shape, dtype=c.dtype, device=self.device) for _, _, c in snap]
+                    slots_bytes += sum(t.numel() * t.element_size() for t in bufs)
+                    rings.append(bufs)
+                self.slots[sig] = rings
+                evs = [torch.cuda.Event() for _ in rings]
+                for ev in evs:
+                    ev.record()
+                self.slot_free[sig] = evs
+        self.slots_gib = slots_bytes / 1024**3
 
         for i, layer in enumerate(self.layers):
             layer.register_forward_pre_hook(self._pre(i))
@@ -116,9 +128,11 @@ class WindowedLayerStreamer:
             setattr(owner, attr, tensor)
 
     def _onload(self, i: int) -> None:
-        slot = self.slots[i % self.nslots]
+        sig, slot_idx = self.sig_of[i], self.slot_of[i]
+        slot_idx %= len(self.slots[sig])
+        slot = self.slots[sig][slot_idx]
         with torch.cuda.stream(self.copy_stream):
-            self.copy_stream.wait_event(self.slot_free[i % self.nslots])
+            self.copy_stream.wait_event(self.slot_free[sig][slot_idx])
             for (owner, attr, cpu), buf in zip(self.cpu_snap[i], slot):
                 buf.copy_(cpu, non_blocking=True)
                 self._set(owner, attr, buf)
@@ -133,7 +147,10 @@ class WindowedLayerStreamer:
         def hook(_m, _args, _out):
             for owner, attr, cpu in self.cpu_snap[i]:
                 self._set(owner, attr, cpu)
-            self.slot_free[i % self.nslots].record(torch.cuda.current_stream(self.device))
+            sig, slot_idx = self.sig_of[i], self.slot_of[i]
+            self.slot_free[sig][slot_idx % len(self.slots[sig])].record(
+                torch.cuda.current_stream(self.device)
+            )
             nxt = i + self.window
             if nxt < len(self.layers):
                 self._onload(nxt)

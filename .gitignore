@@ -6,3 +6,4 @@ build/
 .venv/
 outputs/
 *.safetensors
+models/

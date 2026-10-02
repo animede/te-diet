@@ -1,0 +1,41 @@
+{
+  "recipe": "gemma",
+  "device_name": "NVIDIA RTX PRO 4000 Blackwell",
+  "torch": "2.12.1+cu130",
+  "window": 2,
+  "runs": 5,
+  "rows": [
+    {
+      "config": "resident",
+      "resident_gib": 7.63,
+      "encode_s": 0.0688,
+      "peak_gib": 7.7,
+      "bit_identical": true,
+      "load_s": 4.7
+    },
+    {
+      "config": "tediet",
+      "resident_gib": 0.8,
+      "encode_s": 0.4053,
+      "peak_gib": 0.83,
+      "bit_identical": true,
+      "load_s": 2.5
+    },
+    {
+      "config": "tediet-diet-only",
+      "resident_gib": 5.78,
+      "encode_s": 0.052,
+      "peak_gib": 5.81,
+      "bit_identical": true,
+      "load_s": 2.5
+    },
+    {
+      "config": "group-offload-stream",
+      "error": "RuntimeError: Expected all tensors to be on the same device, but got index is on cuda:1, different from other tensors on cpu (when checking argument in method wrapper_CUDA__index_select)"
+    },
+    {
+      "config": "group-offload",
+      "error": "RuntimeError: Expected all tensors to be on the same device, but got index is on cuda:1, different from other tensors on cpu (when checking argument in method wrapper_CUDA__index_select)"
+    }
+  ]
+}

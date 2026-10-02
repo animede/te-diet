@@ -72,8 +72,8 @@ pinned = apply_stream(pipe.text_encoder, layers_path="model.language_model.layer
 2つの呼び出しはどちらの順でも組み合わせられ、それぞれ冪等です。
 `apply_diet` はパイプラインが `outputs.hidden_states` しか読まないことを
 前提にします(diffusersのテキストエンコーダ経路はすべてそうです)。
-`apply_stream` はデコーダ層が構造的に同一であることを前提にします
-(主要なLLMはすべてそうです)。
+`apply_stream` はリングバッファを層シグネチャごとに持つため、構造の
+異なる層が交互に並ぶモデルでも動きます。
 
 ### モデル別レシピ
 
@@ -85,6 +85,19 @@ pinned = apply_stream(pipe.text_encoder, layers_path="model.language_model.layer
 
 ¹ T5はエンコーダ専用モデルです: `lm_head_path=None` を渡し、
 `apply_lm_head_skip` は使いません。
+
+3レシピとも実機でビット一致を検証済みです(`benchmarks/bench_text_encoder.py`):
+
+| モデル | 常駐(適用前→後) | エンコード(前→後) |
+|---|---|---|
+| Qwen3-VL bf16(Qwen-Image 2.1) | 16.34 → 2.19 GiB | 0.040 → 0.886秒 |
+| Gemma NF4(LTX-2.5) | 7.63 → 0.80 GiB | 0.069 → 0.405秒 |
+| T5-XXL bf16(エンコーダ単体) | 8.87 → 1.47 GiB | 0.023 → 0.570秒 |
+
+Gemma NF4では、公式group offloadingはleaf_level・block_levelとも
+device mismatchでクラッシュしますが、tedietはそのまま動きます。層構造が
+交互型のモデル(Gemmaのsliding/globalアテンション層など)にも、リング
+バッファを層シグネチャごとに分けることで対応しています。
 
 より多くのモデルのレシピと設計解説は [docs/](docs/) にあります。
 

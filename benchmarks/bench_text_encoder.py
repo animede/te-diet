@@ -49,18 +49,20 @@ RECIPES = {
         "offload_root_path": "model.language_model",
     },
     "gemma": {
-        "subdir": "text_encoder",
+        "subdir": "text_encoder_bnb_4bit",
         "tokenizer_subdir": "tokenizer",
-        "loader": "AutoModelForCausalLM",
+        "loader": "Gemma4UnifiedForConditionalGeneration",
         "embed_path": "model.language_model.embed_tokens",
         "layers_path": "model.language_model.layers",
         "inner_path": "model",
         "lm_head_path": "lm_head",
         "offload_root_path": "model.language_model",
+        # leaf_level does not hook bitsandbytes Linear4bit modules and crashes
+        "group_offload_type": "block_level",
     },
     "t5": {
-        "subdir": "text_encoder",
-        "tokenizer_subdir": "tokenizer",
+        "subdir": "",
+        "tokenizer_subdir": "",
         "loader": "T5EncoderModel",
         "embed_path": "encoder.embed_tokens",
         "layers_path": "encoder.block",
@@ -80,9 +82,11 @@ def load_encoder(recipe: dict, model_dir: Path, device: torch.device):
     import transformers
 
     cls = getattr(transformers, recipe["loader"])
+    # device_map covers bitsandbytes checkpoints too, where .to(device) is unsupported
     te = cls.from_pretrained(
-        model_dir / recipe["subdir"], dtype=torch.bfloat16, local_files_only=True
-    ).to(device).eval()
+        model_dir / recipe["subdir"], dtype=torch.bfloat16, local_files_only=True,
+        device_map={"": str(device)},
+    ).eval()
     tok = transformers.AutoTokenizer.from_pretrained(
         model_dir / recipe["tokenizer_subdir"], local_files_only=True
     )
@@ -140,12 +144,15 @@ def setup_config(name: str, te, device, recipe: dict, window: int):
         root = te
         for part in recipe["offload_root_path"].split("."):
             root = getattr(root, part)
+        kwargs = {"offload_type": recipe.get("group_offload_type", "leaf_level")}
+        if kwargs["offload_type"] == "block_level":
+            kwargs["num_blocks_per_group"] = 1
         apply_group_offloading(
             root,
             onload_device=device,
             offload_device=torch.device("cpu"),
-            offload_type="leaf_level",
             use_stream=name.endswith("stream"),
+            **kwargs,
         )
         return
     raise ValueError(name)
