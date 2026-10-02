@@ -1,88 +1,95 @@
 # tediet
 
-Put your diffusion pipeline's text encoder on a diet.
+拡散モデルパイプラインのテキストエンコーダをダイエットさせるライブラリです。
 
-Modern image/video generation models carry huge text encoders — T5-XXL (~9 GB),
-Gemma, Qwen3-VL (~16 GB) — that run **once per job** while the diffusion
-transformer runs for every step. Keeping the whole encoder resident wastes most
-of a 16–24 GB GPU. `tediet` provides two small, composable, **output-exact**
-transformations that reclaim that memory without the latency of generic
-CPU-offloading:
+[English README](README_EN.md)
 
-| Technique | What it does | VRAM effect |
+最近の画像・動画生成モデルは巨大なテキストエンコーダ — T5-XXL(約9GB)、
+Gemma、Qwen3-VL(約16GB)— を抱えていますが、テキストエンコーダは
+**1ジョブに1回しか走りません**。拡散トランスフォーマが全ステップ回る間、
+エンコーダ全体をGPUに常駐させるのは、16〜24GB級GPUの大半を無駄にします。
+`tediet` は、その常駐を取り戻す、小さく・組み合わせ可能で・**出力が
+ビット一致する** 2つの変換を提供します。汎用CPUオフロードのような
+レイテンシの犠牲はありません。
+
+| 手法 | 何をするか | VRAM効果 |
 |---|---|---|
-| **diet** | Moves the token-embedding table and the (unused) LM head to the CPU, and skips the full-vocabulary logits computation | −2.3 GiB on Qwen3-VL, −1.9 GiB on Gemma |
-| **stream** | Keeps the decoder layers in pinned host memory and copies them to fixed GPU ring-buffer slots only while an encode runs, two layers ahead of compute | Layer stack residency −12.9 GiB → ~1.3 GiB (Qwen3-VL bf16) |
+| **diet** | トークン埋め込みテーブルと(未使用の)LMヘッドをCPUへ移し、全語彙logitsの計算をスキップする | Qwen3-VLで−2.3 GiB、Gemmaで−1.9 GiB |
+| **stream** | デコーダ層をpinnedホストメモリに常駐させ、エンコード実行中だけ、計算の2層先読みで固定GPUリングバッファへコピーする | 層スタックの常駐 12.9 GiB → 約1.3 GiB(Qwen3-VL bf16) |
 
-Both are **bit-exact**: the hidden states are identical to the fully resident
-model, because no computation changes — only where two lookups live, whether an
-unused projection runs, and where the unchanged weights are stored.
+どちらも**ビット一致**です: 隠れ状態は全常駐モデルと完全に同一になります。
+計算は何も変えておらず、変わるのは「2つのルックアップがどこに住むか」
+「未使用の射影を実行するか」「変化しない重みをどこに置くか」だけだからです。
 
-## Measured
+## 実測
 
-Qwen-Image 2.1 (Qwen3-VL 16 GB text encoder, bf16), RTX PRO 4000 Blackwell 24 GB,
-1024×1024, end-to-end per image:
+Qwen-Image 2.1(Qwen3-VL 16GBテキストエンコーダ、bf16)、
+RTX PRO 4000 Blackwell 24GB、1024×1024、1枚あたりのエンドツーエンド:
 
-| Configuration | Text-encoder residency | e2e time |
+| 構成 | テキストエンコーダ常駐 | e2e時間 |
 |---|---|---|
-| Fully resident | 16.3 GiB | baseline |
-| diet + stream (window 2) | **~1.5 GiB** | **+0.6 s** |
+| 全常駐 | 16.3 GiB | 基準 |
+| diet + stream(窓2) | **約1.5 GiB** | **+0.6秒** |
 
-LTX-2.5 (Gemma NF4 text encoder), where this implementation originates
-(measured against diffusers' own `apply_group_offloading` on the same model):
+本実装の原型を開発した LTX-2.5(Gemma NF4テキストエンコーダ)での、
+同一モデルに対する diffusers 公式 `apply_group_offloading` との比較:
 
-| Implementation | Encode time |
+| 実装 | エンコード時間 |
 |---|---|
-| Fully resident | 0.213 s |
-| **tediet stream (window 2)** | **0.369 s** |
-| diffusers group offloading, `use_stream=True` | 1.25 s |
-| diffusers group offloading, no stream | 2.2 s |
+| 全常駐 | 0.213秒 |
+| **tediet stream(窓2)** | **0.369秒** |
+| diffusers group offloading(`use_stream=True`) | 1.25秒 |
+| diffusers group offloading(streamなし) | 2.2秒 |
 
-The gap comes from three design choices: hooks attach per layer instead of per
-offload group, restoring a layer is pointer reassignment (no device-to-host
-copy — the weights never change), and the ring buffer makes an encode allocate
-**zero** new GPU memory, which also keeps the allocator stable next to CUDA
-Graph memory pools.
+この差は3つの設計判断から生まれています: フックをオフロードグループ単位
+でなく層単位に直付けすること、層の復元をポインタ差し替えにすること
+(重みは変化しないのでGPU→CPUコピーは発生しません)、リングバッファに
+よりエンコードが**新規GPUメモリを一切確保しない**こと。最後の性質は、
+CUDA Graphのメモリプールと同居してもアロケータが安定するという利点も
+もたらします。
 
-## Usage
+## 使い方
 
 ```python
 from tediet import apply_diet, apply_stream
 
-# Qwen3-VL (Qwen-Image 2.x pipelines)
+# Qwen3-VL(Qwen-Image 2.x系パイプライン)
 freed = apply_diet(pipe.text_encoder, embed_path="model.language_model.embed_tokens")
 pinned = apply_stream(pipe.text_encoder, layers_path="model.language_model.layers",
                       device="cuda:0", window=2)
 ```
 
-The two calls compose in either order, and each is idempotent. `apply_diet`
-assumes the pipeline reads `outputs.hidden_states` (every diffusers text-encoder
-path does); `apply_stream` assumes the decoder layers are structurally identical
-(every mainstream LLM's are).
+2つの呼び出しはどちらの順でも組み合わせられ、それぞれ冪等です。
+`apply_diet` はパイプラインが `outputs.hidden_states` しか読まないことを
+前提にします(diffusersのテキストエンコーダ経路はすべてそうです)。
+`apply_stream` はデコーダ層が構造的に同一であることを前提にします
+(主要なLLMはすべてそうです)。
 
-### Model recipes
+### モデル別レシピ
 
-| Model (pipeline) | `embed_path` | `layers_path` |
+| モデル(パイプライン) | `embed_path` | `layers_path` |
 |---|---|---|
-| Qwen3-VL (Qwen-Image 2.x) | `model.language_model.embed_tokens` | `model.language_model.layers` |
-| Gemma (LTX-2.x) | `model.language_model.embed_tokens` | `model.language_model.layers` |
-| T5-XXL (FLUX, SD3) | `encoder.embed_tokens`¹ | `encoder.block` |
+| Qwen3-VL(Qwen-Image 2.x) | `model.language_model.embed_tokens` | `model.language_model.layers` |
+| Gemma(LTX-2.x) | `model.language_model.embed_tokens` | `model.language_model.layers` |
+| T5-XXL(FLUX、SD3) | `encoder.embed_tokens`¹ | `encoder.block` |
 
-¹ T5 is encoder-only: pass `lm_head_path=None` and skip `apply_lm_head_skip`.
+¹ T5はエンコーダ専用モデルです: `lm_head_path=None` を渡し、
+`apply_lm_head_skip` は使いません。
 
-Recipes for more models, and the design rationale, live in [docs/](docs/).
+より多くのモデルのレシピと設計解説は [docs/](docs/) にあります。
 
-## Requirements and constraints
+## 前提条件と制約
 
-- The model must stay **resident** otherwise: do not combine with
-  `enable_model_cpu_offload` / `enable_sequential_cpu_offload` / accelerate
-  hooks, which move whole components with `.to()` and fight the CPU placement.
-- `stream` pins host RAM equal to the layer stack (12.9 GB for Qwen3-VL bf16).
-- Supported layer parameters: plain fp32/bf16/fp16 tensors and bitsandbytes
-  4-bit (`quant_state` tensors travel with the layer). TorchAO tensor
-  subclasses are untested.
-- Encodes must not run concurrently from multiple threads.
+- モデル本体は**常駐**が前提です: `enable_model_cpu_offload` /
+  `enable_sequential_cpu_offload` / accelerateフックと併用しないでください。
+  これらはコンポーネント全体を `.to()` で往復させるため、CPU配置と衝突します。
+- `stream` は層スタックと同量のpinnedホストRAMを使います
+  (Qwen3-VL bf16で12.9GB)。
+- 対応する層パラメータ: 素のfp32/bf16/fp16テンソルと bitsandbytes 4bit
+  (`quant_state` のテンソルも層と一緒に移動します)。TorchAOのtensor
+  subclassは未検証です。
+- 複数スレッドからの同時エンコードには対応していません。
 
-## License
+## ライセンス
 
-Apache-2.0.
+Apache-2.0
