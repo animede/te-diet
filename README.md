@@ -95,7 +95,9 @@ pinned = apply_stream(pipe.text_encoder, layers_path="model.language_model.layer
 | T5-XXL bf16(エンコーダ単体) | 8.87 → 1.47 GiB | 0.023 → 0.570秒 |
 
 Gemma NF4では、公式group offloadingはleaf_level・block_levelとも
-device mismatchでクラッシュしますが、tedietはそのまま動きます。層構造が
+device mismatchでクラッシュしますが、tedietはそのまま動きます。逆に
+素のT5エンコーダ単体では公式のleaf_level+streamも健闘します
+(0.633秒、常駐はtedietより低い)。層構造が
 交互型のモデル(Gemmaのsliding/globalアテンション層など)にも、リング
 バッファを層シグネチャごとに分けることで対応しています。
 

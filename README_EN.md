@@ -92,7 +92,9 @@ All three recipes are validated bit-identical on real hardware
 | T5-XXL bf16 (encoder-only) | 8.87 → 1.47 GiB | 0.023 → 0.570 s |
 
 On Gemma NF4, stock group offloading crashes with device mismatches at both
-leaf_level and block_level, while tediet runs as-is. Models with alternating
+leaf_level and block_level, while tediet runs as-is. Conversely, on a plain
+T5 encoder the stock leaf_level + stream configuration is a close competitor
+(0.633 s, with lower residency than tediet). Models with alternating
 layer kinds (Gemma's sliding/global attention layers) are handled by keeping
 one ring of slots per layer signature.
 
