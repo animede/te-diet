@@ -81,8 +81,10 @@ to 4 or 8 changes nothing.
 
 ### Why it beats stock `apply_group_offloading`
 
-Against the official implementation of the same concept (pinned + stream +
-prefetch), measured on LTX-2.5's Gemma NF4 encoder:
+We measured against the official implementation of the same concept
+(pinned + stream + prefetch) on two models.
+
+LTX-2.5's Gemma NF4 encoder (block_level, the original measurement):
 
 | Implementation | Encode time |
 |---|---|
@@ -91,13 +93,31 @@ prefetch), measured on LTX-2.5's Gemma NF4 encoder:
 | stock group offloading, `use_stream=True` | 1.25 s |
 | stock group offloading, no stream | 2.2 s |
 
+Qwen3-VL bf16 (reproducible with `benchmarks/bench_text_encoder.py`):
+
+| Implementation | Resident | Encode | Peak |
+|---|---|---|---|
+| Fully resident | 16.34 GiB | 0.040 s | 16.39 GiB |
+| tediet (diet + stream, window 2) | 2.19 GiB | 0.886 s | 2.20 GiB |
+| stock leaf_level + stream | 2.28 GiB | 1.032 s | 3.64 GiB |
+| stock leaf_level, no stream | 2.28 GiB | 6.959 s | 3.44 GiB |
+
+A note for fairness: tuned all the way to leaf_level + stream, the stock
+implementation gets within ~1.2x of tediet's encode time. Reaching that
+configuration has traps, though: block_level applied to the whole encoder
+makes the entire base model one group and the peak equals full residency
+(16.4 GiB), and block_level applied to inner submodules crashes with a
+device mismatch on the unhooked embedding path. tediet's advantage is being
+~17% faster than the best stock setup, peaking 40% lower, allocating
+nothing, and not breaking under naive use.
+
 The gap comes from three design decisions:
 
 1. **Hook granularity.** The stock implementation forces
-   `num_blocks_per_group=1` when `use_stream=True`, and its per-group
-   bookkeeping hook (~22 ms × 48 groups measured) becomes the dominant cost.
-   tediet attaches pre/post hooks directly to the layers, and the hooks do
-   nothing but event operations and pointer assignment.
+   `num_blocks_per_group=1` for block_level with `use_stream=True`, and its
+   per-group bookkeeping hook (~22 ms × 48 groups measured on Gemma) becomes
+   the dominant cost. tediet attaches pre/post hooks directly to the layers,
+   and the hooks do nothing but event operations and pointer assignment.
 2. **Restoring is pointer reassignment.** The weights never change during
    inference, so "unloading" a layer means pointing each parameter's `data`
    back at its pinned CPU tensor. No device-to-host copy ever happens.

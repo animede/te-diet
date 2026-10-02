@@ -30,15 +30,25 @@ Qwen-Image 2.1 (Qwen3-VL 16 GB text encoder, bf16), RTX PRO 4000 Blackwell 24 GB
 | Fully resident | 16.3 GiB | baseline |
 | diet + stream (window 2) | **~1.5 GiB** | **+0.6 s** |
 
-LTX-2.5 (Gemma NF4 text encoder), where this implementation originates
-(measured against diffusers' own `apply_group_offloading` on the same model):
+Against diffusers' own `apply_group_offloading` on the same Qwen3-VL
+(reproducible with `benchmarks/bench_text_encoder.py`; 27-token prompt,
+encode only, mean of 5):
 
-| Implementation | Encode time |
-|---|---|
-| Fully resident | 0.213 s |
-| **tediet stream (window 2)** | **0.369 s** |
-| diffusers group offloading, `use_stream=True` | 1.25 s |
-| diffusers group offloading, no stream | 2.2 s |
+| Implementation | Resident | Encode | Peak |
+|---|---|---|---|
+| Fully resident | 16.34 GiB | 0.040 s | 16.39 GiB |
+| **tediet (diet + stream, window 2)** | **2.19 GiB** | **0.886 s** | **2.20 GiB** |
+| stock leaf_level + `use_stream=True` | 2.28 GiB | 1.032 s | 3.64 GiB |
+| stock leaf_level, no stream | 2.28 GiB | 6.959 s | 3.44 GiB |
+
+The gap against the stock implementation is 1.2–8x depending on its
+configuration. To be fair: tuned all the way to leaf_level + stream, the
+stock implementation comes close. tediet is still ~17% faster to encode,
+peaks 40% lower (the fixed ring buffer allocates nothing), and has none of
+the traps of the naive setups (block_level on the whole encoder onloads the
+entire base model as one group; block_level on inner submodules crashes on
+the unhooked embedding). On LTX-2.5's Gemma NF4 encoder we measured a 3–6x
+gap against the stock implementation.
 
 The gap comes from three design choices: hooks attach per layer instead of per
 offload group, restoring a layer is pointer reassignment (no device-to-host

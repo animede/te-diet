@@ -1,0 +1,49 @@
+{
+  "recipe": "qwen3vl",
+  "device_name": "NVIDIA RTX PRO 4000 Blackwell",
+  "torch": "2.12.1+cu130",
+  "window": 2,
+  "runs": 5,
+  "rows": [
+    {
+      "config": "resident",
+      "resident_gib": 16.34,
+      "encode_s": 0.0395,
+      "peak_gib": 16.39,
+      "bit_identical": true,
+      "load_s": 4.1
+    },
+    {
+      "config": "tediet",
+      "resident_gib": 2.19,
+      "encode_s": 0.8856,
+      "peak_gib": 2.2,
+      "bit_identical": true,
+      "load_s": 2.6
+    },
+    {
+      "config": "tediet-diet-only",
+      "resident_gib": 14.05,
+      "encode_s": 0.0368,
+      "peak_gib": 14.06,
+      "bit_identical": true,
+      "load_s": 2.6
+    },
+    {
+      "config": "group-offload-stream",
+      "resident_gib": 2.28,
+      "encode_s": 1.0324,
+      "peak_gib": 3.64,
+      "bit_identical": true,
+      "load_s": 2.6
+    },
+    {
+      "config": "group-offload",
+      "resident_gib": 2.28,
+      "encode_s": 6.9593,
+      "peak_gib": 3.44,
+      "bit_identical": true,
+      "load_s": 2.5
+    }
+  ]
+}

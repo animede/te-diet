@@ -31,15 +31,25 @@ RTX PRO 4000 Blackwell 24GB、1024×1024、1枚あたりのエンドツーエン
 | 全常駐 | 16.3 GiB | 基準 |
 | diet + stream(窓2) | **約1.5 GiB** | **+0.6秒** |
 
-本実装の原型を開発した LTX-2.5(Gemma NF4テキストエンコーダ)での、
-同一モデルに対する diffusers 公式 `apply_group_offloading` との比較:
+同じQwen3-VLに対する diffusers 公式 `apply_group_offloading` との比較
+(`benchmarks/bench_text_encoder.py` で再現可能。27トークンのプロンプト、
+エンコード単体、5回平均):
 
-| 実装 | エンコード時間 |
-|---|---|
-| 全常駐 | 0.213秒 |
-| **tediet stream(窓2)** | **0.369秒** |
-| diffusers group offloading(`use_stream=True`) | 1.25秒 |
-| diffusers group offloading(streamなし) | 2.2秒 |
+| 実装 | 常駐 | エンコード | ピーク |
+|---|---|---|---|
+| 全常駐 | 16.34 GiB | 0.040秒 | 16.39 GiB |
+| **tediet(diet + stream 窓2)** | **2.19 GiB** | **0.886秒** | **2.20 GiB** |
+| 公式 leaf_level + `use_stream=True` | 2.28 GiB | 1.032秒 | 3.64 GiB |
+| 公式 leaf_level(streamなし) | 2.28 GiB | 6.959秒 | 3.44 GiB |
+
+公式実装との差は条件によって1.2倍〜8倍です。公平を期すと: 公式も
+leaf_level+streamまで設定を詰めれば近い水準に来ます。ただしtedietは
+それに対してもエンコードが約17%速く、ピークが4割低く(固定リング
+バッファで新規確保ゼロ)、素朴に適用した場合の罠(エンコーダ全体への
+block_levelはベースモデル全体を1グループとして全載せ、内側サブ
+モジュールへのblock_levelは埋め込み経路のdevice mismatchでクラッシュ)
+がありません。LTX-2.5のGemma NF4エンコーダでは公式比3〜6倍の差を
+実測しています。
 
 この差は3つの設計判断から生まれています: フックをオフロードグループ単位
 でなく層単位に直付けすること、層の復元をポインタ差し替えにすること

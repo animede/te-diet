@@ -78,8 +78,10 @@ device mismatchで壊れ、さらにマスク導出の分岐自体が本番経�
 
 ### なぜ公式 `apply_group_offloading` より速いのか
 
-同じ「pinned+stream+prefetch」という概念の公式実装に対し、LTX-2.5の
-Gemma NF4エンコーダでの実測は次の通りでした。
+同じ「pinned+stream+prefetch」という概念の公式実装に対して、2つのモデルで
+実測しました。
+
+LTX-2.5のGemma NF4エンコーダ(block_level、原測定):
 
 | 実装 | エンコード時間 |
 |---|---|
@@ -88,11 +90,29 @@ Gemma NF4エンコーダでの実測は次の通りでした。
 | 公式 group offloading(`use_stream=True`) | 1.25秒 |
 | 公式 group offloading(streamなし) | 2.2秒 |
 
+Qwen3-VL bf16(`benchmarks/bench_text_encoder.py` で再現可能):
+
+| 実装 | 常駐 | エンコード | ピーク |
+|---|---|---|---|
+| 全常駐 | 16.34 GiB | 0.040秒 | 16.39 GiB |
+| tediet(diet+stream 窓2) | 2.19 GiB | 0.886秒 | 2.20 GiB |
+| 公式 leaf_level + stream | 2.28 GiB | 1.032秒 | 3.64 GiB |
+| 公式 leaf_level(streamなし) | 2.28 GiB | 6.959秒 | 3.44 GiB |
+
+公平のための注記: 公式実装も leaf_level + stream まで設定を詰めれば
+エンコード時間はtedietの約1.2倍まで迫ります。ただしこの設定に辿り着く
+過程に罠があります。エンコーダ全体へ block_level を適用するとベース
+モデル全体が1グループになりピークが全常駐と同じ16.4GiBになります。
+内側サブモジュールへ block_level を適用すると、フックの付かない
+埋め込み経路が device mismatch でクラッシュします。tedietの優位は
+「最良設定でも約17%速く、ピークが4割低く、新規確保ゼロで、素朴に
+使って壊れない」ことです。
+
 差は3つの設計判断から生まれています。
 
-1. **フックの粒度**: 公式実装は `use_stream=True` のとき
+1. **フックの粒度**: 公式実装は block_level + `use_stream=True` のとき
    `num_blocks_per_group=1` が強制され、グループごとの管理フック固定費
-   (実測約22ms×48グループ)が支配項になります。tedietは層に直接
+   (Gemmaで実測約22ms×48グループ)が支配項になります。tedietは層に直接
    pre/post hookを付け、フック内の仕事をイベント操作とポインタ代入だけに
    絞っています。
 2. **復元はポインタ差し替え**: 重みは推論中に変化しないため、層の
