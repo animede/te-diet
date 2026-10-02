@@ -7,3 +7,4 @@ build/
 outputs/
 *.safetensors
 models/
+src/tediet.egg-info/

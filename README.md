@@ -117,4 +117,4 @@ device mismatchでクラッシュしますが、tedietはそのまま動きま�
 
 ## ライセンス
 
-Apache-2.0
+MIT

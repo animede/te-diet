@@ -113,4 +113,4 @@ Recipes for more models, and the design rationale, live in [docs/](docs/).
 
 ## License
 
-Apache-2.0.
+MIT.
